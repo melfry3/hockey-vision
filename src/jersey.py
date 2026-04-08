@@ -2,14 +2,14 @@
 
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
+import easyocr
 
 
 class JerseyReader:
     """Identifies jersey numbers from cropped player images."""
 
     def __init__(self, crop_top_pct=0.15, crop_bottom_pct=0.55, min_crop_pixels=30):
-        self.ocr = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        self.reader = easyocr.Reader(["en"], gpu=True, verbose=False)
         self.crop_top_pct = crop_top_pct
         self.crop_bottom_pct = crop_bottom_pct
         self.min_crop_pixels = min_crop_pixels
@@ -34,18 +34,15 @@ class JerseyReader:
         # Preprocess: grayscale, contrast boost
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         enhanced = cv2.equalizeHist(gray)
-        enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
-        results = self.ocr.ocr(enhanced_bgr, cls=False)
-        if not results or not results[0]:
+        results = self.reader.readtext(enhanced, allowlist="0123456789")
+        if not results:
             return None, 0.0
 
         # Look for numeric results (jersey numbers are 1-99)
         best_number = None
         best_conf = 0.0
-        for line in results[0]:
-            text = line[1][0].strip()
-            conf = line[1][1]
+        for (bbox_coords, text, conf) in results:
             digits = "".join(c for c in text if c.isdigit())
             if digits and 1 <= int(digits) <= 99 and conf > best_conf:
                 best_number = digits
