@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Video files (too large for git)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+
+# Model weights (download separately)
+*.pt
+*.onnx
+*.engine
+
+# Output
+output/
+*.png
+*.jpg
+*.jpeg
+!templates/*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env

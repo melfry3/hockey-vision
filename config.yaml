@@ -1,0 +1,47 @@
+# Hockey Vision Configuration
+
+# Your jersey number for game analysis
+jersey_number: null  # Set to your number, e.g. 17
+
+# Detection settings
+detection:
+  model: "yolo11m.pt"         # YOLOv11 medium — good balance of speed/accuracy
+  confidence: 0.4              # Minimum detection confidence
+  person_class_id: 0           # COCO class ID for person
+
+# Pose estimation (for skills mode)
+pose:
+  model: "yolo11m-pose.pt"    # YOLOv11 pose model
+  confidence: 0.4
+
+# Tracking
+tracking:
+  tracker: "bytetrack.yaml"
+  persist: true
+
+# Jersey recognition
+jersey:
+  crop_top_pct: 0.15          # Crop top % of player bbox for number region
+  crop_bottom_pct: 0.55       # Crop bottom % of player bbox
+  min_crop_pixels: 30         # Minimum crop size to attempt OCR
+
+# Homography / rink mapping
+rink:
+  # Standard NHL rink dimensions in feet
+  length: 200
+  width: 85
+  template: "templates/rink.png"
+
+# Analysis
+analysis:
+  fps_sample_rate: 5          # Analyze every Nth frame (higher = faster, less precise)
+  speed_smoothing_window: 5   # Frames to smooth speed estimates
+  heatmap_resolution: 100     # Grid resolution for heatmaps
+
+# Output
+output:
+  directory: "output"
+  save_annotated_video: true
+  save_heatmap: true
+  save_shift_clips: true
+  save_stats_json: true
