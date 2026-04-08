@@ -1,8 +1,8 @@
 # Hockey Vision
 
-Ice hockey video analysis tool for tracking player performance from rink-level game footage and skills sessions.
+Ice hockey video analysis tool for tracking player performance from rink-level game footage and skills sessions. Built-in AI coaching copilot provides actionable feedback and tracks improvement over time.
 
-## Two Modes
+## Two Analysis Modes
 
 ### Game Analysis
 Track yourself by jersey number through a full game. Outputs:
@@ -10,6 +10,7 @@ Track yourself by jersey number through a full game. Outputs:
 - Shift detection and duration chart
 - Ice time, distance, speed estimates
 - Annotated video highlighting your position
+- AI coaching feedback on positioning and effort
 
 ### Skills Analysis
 Analyze skating form from skills class or practice footage. Outputs:
@@ -17,8 +18,16 @@ Analyze skating form from skills class or practice footage. Outputs:
 - Knee bend angles (target: 90-120 degrees for good hockey stance)
 - Forward lean measurement
 - Stride width tracking
-- Session-over-session improvement comparison
 - Annotated video with real-time form metrics
+- AI coaching feedback on form and improvement areas
+
+## AI Copilot
+
+Every analysis automatically saves to your session history. The AI coach (powered by Claude) can:
+- **Review** your latest session with specific feedback
+- **Compare** sessions to show what improved or regressed
+- **Plan** a multi-week improvement program from your full history
+- **Answer** open-ended hockey questions with your data as context
 
 ## Setup
 
@@ -30,14 +39,43 @@ pip install -r requirements.txt
 
 YOLO model weights download automatically on first run.
 
+Set your API key for AI coaching:
+```bash
+export ANTHROPIC_API_KEY=your-key-here
+```
+
 ## Usage
 
 ```bash
 # Analyze a game — track jersey #17
 python main.py game path/to/game.mp4 --jersey 17
 
+# Analyze a game with a label for tracking
+python main.py game path/to/game.mp4 -j 17 --label "2026-04-07-league"
+
 # Analyze a skills session
-python main.py skills path/to/skills.mp4
+python main.py skills path/to/skills.mp4 --label "2026-04-07-skills-class"
+
+# Skip AI coaching feedback
+python main.py game path/to/game.mp4 -j 17 --no-coach
+
+# Ask your AI coach anything
+python main.py ask "How can I improve my first stride?"
+python main.py ask -m skills "Why is my knee bend so shallow?"
+
+# Get a coaching review comparing your latest to previous
+python main.py review -m skills
+python main.py review -m game
+
+# Generate an improvement plan from all sessions
+python main.py plan -m skills
+
+# View session history
+python main.py sessions
+python main.py sessions -m game
+
+# Track a metric over time
+python main.py trend -m skills summary.knee_bend.mean
 
 # Calibrate rink homography (optional — improves position accuracy)
 python main.py calibrate path/to/game.mp4
@@ -52,6 +90,8 @@ Results go to `output/` by default:
 - `skills_stats.json` — form metrics summary
 - `skills_annotated.mp4` — video with pose overlay
 
+Session history is saved to `sessions/` for cross-session comparison.
+
 ## Configuration
 
 Edit `config.yaml` to adjust detection confidence, sampling rate, and analysis parameters.
@@ -63,3 +103,4 @@ Edit `config.yaml` to adjust detection confidence, sampling rate, and analysis p
 - **Pose estimation**: YOLOv11-pose
 - **Jersey OCR**: PaddleOCR
 - **Homography**: OpenCV
+- **AI Coaching**: Claude (Anthropic API)

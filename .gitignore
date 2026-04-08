@@ -41,5 +41,8 @@ output/
 .DS_Store
 Thumbs.db
 
+# Session data (local analysis history)
+sessions/
+
 # Environment
 .env
