@@ -24,20 +24,33 @@ def cli():
 # ---------------------------------------------------------------------------
 
 @cli.command()
-@click.argument("video", type=click.Path(exists=True))
+@click.argument("videos", nargs=-1, required=True, type=click.Path(exists=True))
 @click.option("--jersey", "-j", type=int, required=True, help="Your jersey number")
+@click.option("--color", type=click.Choice(["white", "dark"]), default=None,
+              help="Your team's jersey color (helps with detection)")
+@click.option("--skip-warmup", type=int, default=0,
+              help="Seconds to skip at the start of the first clip (warmup)")
 @click.option("--output", "-o", default="output", help="Output directory")
 @click.option("--config", "-c", default="config.yaml", help="Config file path")
-@click.option("--label", "-l", default=None, help="Session label (e.g. '2026-04-07-league')")
+@click.option("--label", "-l", default=None, help="Session label (e.g. '2026-04-04-league')")
 @click.option("--coach/--no-coach", default=True, help="Get AI coaching feedback after analysis")
-def game(video, jersey, output, config, label, coach):
-    """Analyze a game video. Tracks you by jersey number and generates stats."""
+def game(videos, jersey, color, skip_warmup, output, config, label, coach):
+    """Analyze game video(s). Supports multiple clips for one game.
+
+    Examples:
+        python main.py game clip1.mp4 -j 83 --color white
+        python main.py game clip1.mp4 clip2.mp4 clip3.mp4 -j 83 --color white --skip-warmup 480
+    """
     cfg = load_config(config)
 
     from src.pipeline import analyze_game
     from src.compare import SessionStore
 
-    stats = analyze_game(video, jersey, output_dir=output, config=cfg.get("analysis", {}))
+    video_list = list(videos)
+    stats = analyze_game(
+        video_list, jersey, output_dir=output, config=cfg.get("analysis", {}),
+        skip_warmup_seconds=skip_warmup, team_color=color,
+    )
 
     if stats:
         store = SessionStore()

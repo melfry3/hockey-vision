@@ -1,7 +1,8 @@
 # Hockey Vision Configuration
 
 # Your jersey number for game analysis
-jersey_number: null  # Set to your number, e.g. 17
+jersey_number: 83
+team_color: white
 
 # Detection settings
 detection:

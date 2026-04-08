@@ -18,38 +18,32 @@ from .visualizer import (
 )
 
 
-def analyze_game(video_path, jersey_number, output_dir="output", config=None):
-    """Full game analysis pipeline.
+def _process_single_video(video_path, tracker, jersey_reader, jersey_number,
+                          sample_rate, frame_offset=0, skip_seconds=0):
+    """Process a single video clip, returning jersey votes and frame count.
 
-    1. Track all players
-    2. Identify target player by jersey number
-    3. Compute skating analytics
-    4. Generate output (annotated video, heatmap, stats)
+    frame_offset: added to frame numbers so multi-clip frame counts are continuous.
+    skip_seconds: skip this many seconds from the start (e.g., to skip warmup).
     """
-    config = config or {}
-    os.makedirs(output_dir, exist_ok=True)
-
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    sample_rate = config.get("fps_sample_rate", 5)
+    duration_min = total_frames / fps / 60
 
-    print(f"Video: {width}x{height} @ {fps:.1f} fps, {total_frames} frames")
-    print(f"Looking for jersey #{jersey_number}")
-    print(f"Sampling every {sample_rate} frames")
+    print(f"\n  Clip: {os.path.basename(video_path)}")
+    print(f"  {width}x{height} @ {fps:.1f} fps, {duration_min:.1f} min")
 
-    tracker = PlayerTracker()
-    jersey_reader = JerseyReader()
-    analytics = SkatingAnalytics(fps=fps, sample_rate=sample_rate)
+    # Skip warmup if requested
+    skip_frames = int(skip_seconds * fps)
+    if skip_frames > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, skip_frames)
+        print(f"  Skipping first {skip_seconds}s (warmup)")
 
-    # Phase 1: Track all players and identify target
-    target_track_id = None
-    jersey_votes = {}  # track_id -> count of times identified as target
-    frame_num = 0
+    jersey_votes = {}
+    frame_num = skip_frames
 
-    print("\n--- Phase 1: Tracking players and identifying jersey ---")
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -59,7 +53,8 @@ def analyze_game(video_path, jersey_number, output_dir="output", config=None):
             frame_num += 1
             continue
 
-        tracked = tracker.update(frame, frame_num)
+        global_frame = frame_offset + frame_num
+        tracked = tracker.update(frame, global_frame)
 
         # Try to read jersey numbers periodically
         if frame_num % (sample_rate * 10) == 0 and tracked:
@@ -69,35 +64,98 @@ def analyze_game(video_path, jersey_number, output_dir="output", config=None):
 
         if frame_num % (int(fps) * 30) == 0:
             elapsed_min = frame_num / fps / 60
-            print(f"  Processed {elapsed_min:.1f} min...")
+            print(f"    {elapsed_min:.1f} min...")
 
         frame_num += 1
 
+    cap.release()
+    return jersey_votes, frame_num, fps
+
+
+def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
+                 skip_warmup_seconds=0, team_color=None):
+    """Full game analysis pipeline. Supports single video or multiple clips.
+
+    video_paths: single path string or list of paths for multi-clip games.
+    jersey_number: your number (e.g., 83).
+    skip_warmup_seconds: seconds to skip at the start of the first clip.
+    team_color: 'white' or 'dark' — helps with jersey detection (future use).
+    """
+    config = config or {}
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Normalize to list
+    if isinstance(video_paths, str):
+        video_paths = [video_paths]
+
+    sample_rate = config.get("fps_sample_rate", 5)
+
+    print(f"=== Game Analysis ===")
+    print(f"Jersey #{jersey_number}" + (f" ({team_color})" if team_color else ""))
+    print(f"Clips: {len(video_paths)}")
+    print(f"Sampling every {sample_rate} frames")
+
+    tracker = PlayerTracker()
+    jersey_reader = JerseyReader()
+
+    # Phase 1: Track across all clips
+    print("\n--- Phase 1: Tracking players and identifying jersey ---")
+    all_jersey_votes = {}
+    frame_offset = 0
+    game_fps = 30  # will be set from first clip
+
+    for i, path in enumerate(video_paths):
+        skip = skip_warmup_seconds if i == 0 else 0
+        votes, frames_processed, fps = _process_single_video(
+            path, tracker, jersey_reader, jersey_number,
+            sample_rate, frame_offset=frame_offset, skip_seconds=skip,
+        )
+        if i == 0:
+            game_fps = fps
+        # Merge jersey votes
+        for tid, count in votes.items():
+            all_jersey_votes[tid] = all_jersey_votes.get(tid, 0) + count
+        frame_offset += frames_processed
+
     # Pick the track most often identified as target jersey
-    if jersey_votes:
-        target_track_id = max(jersey_votes, key=jersey_votes.get)
-        confidence = jersey_votes[target_track_id] / max(sum(jersey_votes.values()), 1)
+    target_track_id = None
+    if all_jersey_votes:
+        target_track_id = max(all_jersey_votes, key=all_jersey_votes.get)
+        total_votes = sum(all_jersey_votes.values())
+        confidence = all_jersey_votes[target_track_id] / max(total_votes, 1)
         print(f"\nIdentified jersey #{jersey_number} as track {target_track_id} "
-              f"({jersey_votes[target_track_id]} detections, {confidence:.0%} confidence)")
+              f"({all_jersey_votes[target_track_id]} detections, {confidence:.0%} confidence)")
     else:
         print(f"\nCould not identify jersey #{jersey_number} — showing all tracks")
 
     # Phase 2: Compute analytics for target player
     print("\n--- Phase 2: Computing analytics ---")
+    analytics = SkatingAnalytics(fps=game_fps, sample_rate=sample_rate)
+
     if target_track_id:
         positions = tracker.get_track(target_track_id)
         shifts = analytics.shift_summary(positions)
         total_distance = analytics.compute_distance(positions)
         ice_time = analytics.compute_ice_time(positions)
         heatmap = analytics.compute_heatmap(positions)
+        speeds = analytics.compute_speed(positions)
+        avg_speed = np.mean([s for _, s in speeds]) if speeds else 0.0
+        max_speed = max([s for _, s in speeds]) if speeds else 0.0
 
         stats = {
             "jersey_number": jersey_number,
+            "team_color": team_color,
             "track_id": target_track_id,
+            "clips": [os.path.basename(p) for p in video_paths],
             "total_ice_time_sec": round(ice_time, 1),
             "total_ice_time_min": round(ice_time / 60, 1),
             "total_distance_px": round(total_distance, 1),
+            "avg_speed_px_sec": round(avg_speed, 1),
+            "max_speed_px_sec": round(max_speed, 1),
             "num_shifts": len(shifts),
+            "avg_shift_duration_sec": round(
+                np.mean([s["duration_sec"] for s in shifts]), 1
+            ) if shifts else 0,
             "shifts": shifts,
         }
 
@@ -119,10 +177,12 @@ def analyze_game(video_path, jersey_number, output_dir="output", config=None):
         print(f"\n--- Results for #{jersey_number} ---")
         print(f"  Ice time: {stats['total_ice_time_min']} min")
         print(f"  Shifts: {stats['num_shifts']}")
+        print(f"  Avg shift: {stats['avg_shift_duration_sec']}s")
+        print(f"  Avg speed: {stats['avg_speed_px_sec']:.0f} px/s")
+        print(f"  Max speed: {stats['max_speed_px_sec']:.0f} px/s")
         for s in shifts:
             print(f"    Shift {s['shift_number']}: {s['duration_sec']}s")
 
-    cap.release()
     print("\nDone.")
     return stats if target_track_id else None
 
