@@ -1,8 +1,10 @@
 # Hockey Vision Configuration
 
-# Your jersey number for game analysis
-jersey_number: 83
-team_color: white
+# Specify jersey number and team color per run via CLI flags:
+#   python main.py game video.mp4 -j 83 --color white
+# No defaults — you may play for different teams/numbers
+jersey_number: null
+team_color: null
 
 # Detection settings
 detection:

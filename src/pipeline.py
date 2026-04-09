@@ -7,6 +7,8 @@ import numpy as np
 
 from .tracker import PlayerTracker
 from .jersey import JerseyReader
+from .team_color import TeamClassifier
+from .identify import select_player_from_frame
 from .analytics import SkatingAnalytics
 from .pose import PoseAnalyzer
 from .visualizer import (
@@ -76,10 +78,17 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
                  skip_warmup_seconds=0, team_color=None):
     """Full game analysis pipeline. Supports single video or multiple clips.
 
+    Player identification strategy:
+    1. Track all players across all clips
+    2. Classify each track by team color (white vs dark)
+    3. Filter to your team
+    4. Try jersey OCR on your team's players
+    5. If OCR fails, show a frame and let you click on yourself
+
     video_paths: single path string or list of paths for multi-clip games.
     jersey_number: your number (e.g., 83).
     skip_warmup_seconds: seconds to skip at the start of the first clip.
-    team_color: 'white' or 'dark' — helps with jersey detection (future use).
+    team_color: 'white' or 'dark'.
     """
     config = config or {}
     os.makedirs(output_dir, exist_ok=True)
@@ -93,40 +102,138 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
     print(f"=== Game Analysis ===")
     print(f"Jersey #{jersey_number}" + (f" ({team_color})" if team_color else ""))
     print(f"Clips: {len(video_paths)}")
-    print(f"Sampling every {sample_rate} frames")
+    print(f"Sampling every {sample_rate} frames", flush=True)
 
     tracker = PlayerTracker()
     jersey_reader = JerseyReader()
+    team_classifier = TeamClassifier()
 
-    # Phase 1: Track across all clips
-    print("\n--- Phase 1: Tracking players and identifying jersey ---")
+    # Phase 1: Track across all clips, classify team colors
+    print("\n--- Phase 1: Tracking players and classifying teams ---", flush=True)
     all_jersey_votes = {}
+    team_votes = {}
     frame_offset = 0
-    game_fps = 30  # will be set from first clip
+    game_fps = 30
+    id_frame = None       # save a good frame for manual selection
+    id_frame_tracked = None
+    id_frame_num = None
 
     for i, path in enumerate(video_paths):
         skip = skip_warmup_seconds if i == 0 else 0
-        votes, frames_processed, fps = _process_single_video(
-            path, tracker, jersey_reader, jersey_number,
-            sample_rate, frame_offset=frame_offset, skip_seconds=skip,
-        )
+
+        cap = cv2.VideoCapture(path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration_min = total_frames / fps / 60
+
+        print(f"\n  Clip: {os.path.basename(path)}")
+        print(f"  {width}x{height} @ {fps:.1f} fps, {duration_min:.1f} min", flush=True)
+
         if i == 0:
             game_fps = fps
-        # Merge jersey votes
-        for tid, count in votes.items():
-            all_jersey_votes[tid] = all_jersey_votes.get(tid, 0) + count
-        frame_offset += frames_processed
 
-    # Pick the track most often identified as target jersey
+        skip_frames = int(skip * fps)
+        if skip_frames > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, skip_frames)
+            print(f"  Skipping first {skip}s (warmup)", flush=True)
+
+        frame_num = skip_frames
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_num % sample_rate != 0:
+                frame_num += 1
+                continue
+
+            global_frame = frame_offset + frame_num
+            tracked = tracker.update(frame, global_frame)
+
+            # Classify team colors every 10th sampled frame
+            if frame_num % (sample_rate * 10) == 0 and tracked:
+                team_votes = team_classifier.build_team_votes(
+                    frame, tracked, existing_votes=team_votes
+                )
+                # Also try jersey OCR on team-filtered players
+                if team_color:
+                    team_players = team_classifier.filter_by_team(
+                        frame, tracked, team_color
+                    )
+                else:
+                    team_players = tracked
+                match_id = jersey_reader.identify_target(
+                    frame, team_players, jersey_number
+                )
+                if match_id is not None:
+                    all_jersey_votes[match_id] = all_jersey_votes.get(match_id, 0) + 1
+
+            # Save a mid-game frame for manual selection fallback
+            if i == 0 and id_frame is None and frame_num > skip_frames + int(fps * 30):
+                if tracked and len(tracked) >= 5:
+                    id_frame = frame.copy()
+                    id_frame_tracked = tracked[:]
+                    id_frame_num = global_frame
+
+            if frame_num % (int(fps) * 30) == 0:
+                elapsed_min = frame_num / fps / 60
+                print(f"    {elapsed_min:.1f} min...", flush=True)
+
+            frame_num += 1
+
+        cap.release()
+        frame_offset += frame_num
+
+    # Phase 1b: Identify target player
     target_track_id = None
+
+    # Strategy A: Jersey OCR matched
     if all_jersey_votes:
         target_track_id = max(all_jersey_votes, key=all_jersey_votes.get)
         total_votes = sum(all_jersey_votes.values())
         confidence = all_jersey_votes[target_track_id] / max(total_votes, 1)
-        print(f"\nIdentified jersey #{jersey_number} as track {target_track_id} "
-              f"({all_jersey_votes[target_track_id]} detections, {confidence:.0%} confidence)")
-    else:
-        print(f"\nCould not identify jersey #{jersey_number} — showing all tracks")
+        print(f"\nJersey OCR identified #{jersey_number} as track {target_track_id} "
+              f"({all_jersey_votes[target_track_id]} detections, {confidence:.0%} confidence)",
+              flush=True)
+        # If very low confidence, fall through to manual
+        if all_jersey_votes[target_track_id] < 3:
+            print("Low confidence — falling back to manual selection.", flush=True)
+            target_track_id = None
+
+    # Strategy B: Manual click-to-identify
+    if target_track_id is None and id_frame is not None:
+        print(f"\nJersey OCR couldn't reliably find #{jersey_number}.", flush=True)
+        print("Opening a frame for manual identification...", flush=True)
+
+        # Get team-filtered track IDs
+        team_track_ids = None
+        if team_color and team_votes:
+            team_track_ids = team_classifier.get_team_tracks(
+                team_votes, team_color, min_votes=3, min_ratio=0.6
+            )
+            # Filter id_frame_tracked to only include tracks in team_track_ids
+            filtered_tracked = [
+                p for p in id_frame_tracked
+                if p["track_id"] in team_track_ids
+            ] if team_track_ids else id_frame_tracked
+            print(f"Showing {len(filtered_tracked)} {team_color} team players "
+                  f"(green boxes). Click on yourself.", flush=True)
+        else:
+            filtered_tracked = id_frame_tracked
+            team_track_ids = None
+
+        target_track_id = select_player_from_frame(
+            id_frame, filtered_tracked,
+            team_filter=team_track_ids,
+            title=f"Click on yourself (#{jersey_number} {team_color or ''})"
+        )
+
+        if target_track_id is not None:
+            print(f"Selected track {target_track_id}", flush=True)
+        else:
+            print("No player selected.", flush=True)
 
     # Phase 2: Compute analytics for target player
     print("\n--- Phase 2: Computing analytics ---")
