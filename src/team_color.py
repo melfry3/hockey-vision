@@ -7,7 +7,7 @@ import numpy as np
 class TeamClassifier:
     """Classify players as white or dark team based on jersey color."""
 
-    def __init__(self, brightness_threshold=160):
+    def __init__(self, brightness_threshold=130):
         self.brightness_threshold = brightness_threshold
 
     def classify_player(self, frame, bbox):

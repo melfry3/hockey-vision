@@ -30,16 +30,19 @@ def cli():
               help="Your team's jersey color (helps with detection)")
 @click.option("--skip-warmup", type=int, default=0,
               help="Seconds to skip at the start of the first clip (warmup)")
+@click.option("--identify-at", type=int, default=None,
+              help="Seconds into first clip to open player identification browser")
 @click.option("--output", "-o", default="output", help="Output directory")
 @click.option("--config", "-c", default="config.yaml", help="Config file path")
 @click.option("--label", "-l", default=None, help="Session label (e.g. '2026-04-04-league')")
 @click.option("--coach/--no-coach", default=True, help="Get AI coaching feedback after analysis")
-def game(videos, jersey, color, skip_warmup, output, config, label, coach):
+def game(videos, jersey, color, skip_warmup, identify_at, output, config, label, coach):
     """Analyze game video(s). Supports multiple clips for one game.
 
     Examples:
         python main.py game clip1.mp4 -j 83 --color white
         python main.py game clip1.mp4 clip2.mp4 clip3.mp4 -j 83 --color white --skip-warmup 480
+        python main.py game clip1.mp4 -j 83 --color white --identify-at 720
     """
     cfg = load_config(config)
 
@@ -49,7 +52,7 @@ def game(videos, jersey, color, skip_warmup, output, config, label, coach):
     video_list = list(videos)
     stats = analyze_game(
         video_list, jersey, output_dir=output, config=cfg.get("analysis", {}),
-        skip_warmup_seconds=skip_warmup, team_color=color,
+        skip_warmup_seconds=skip_warmup, team_color=color, identify_at=identify_at,
     )
 
     if stats:

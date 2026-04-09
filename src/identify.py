@@ -20,38 +20,32 @@ def select_player_from_frame(frame, tracked_players, team_filter=None, title="Cl
         x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
 
         if team_filter and tid in team_filter:
-            # Highlight team-filtered players in green
             cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(display, f"T{tid}", (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         elif team_filter:
-            # Dim non-matching players
             cv2.rectangle(display, (x1, y1), (x2, y2), (100, 100, 100), 1)
         else:
-            # No filter — show all equally
             cv2.rectangle(display, (x1, y1), (x2, y2), (0, 200, 200), 2)
             cv2.putText(display, f"T{tid}", (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 200), 1)
 
-    # Instructions
-    cv2.putText(display, f"{title} - press 'q' to cancel", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display, f"{title} | 'q'=cancel | click any player", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    selected_id = [None]  # mutable container for closure
+    selected_id = [None]
 
     def on_click(event, x, y, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        # Find which player bbox contains the click
+        # Find which player bbox contains the click — match ANY player, not just filtered
         best_tid = None
         best_area = float("inf")
         for player in tracked_players:
-            if team_filter and player["track_id"] not in team_filter:
-                continue
             bx1, by1, bx2, by2 = [int(v) for v in player["bbox"]]
             if bx1 <= x <= bx2 and by1 <= y <= by2:
                 area = (bx2 - bx1) * (by2 - by1)
-                if area < best_area:  # pick smallest containing box
+                if area < best_area:
                     best_area = area
                     best_tid = player["track_id"]
         if best_tid is not None:
@@ -71,54 +65,109 @@ def select_player_from_frame(frame, tracked_players, team_filter=None, title="Cl
     return selected_id[0]
 
 
-def select_player_from_video(video_path, tracker, team_classifier=None,
-                             target_team=None, seek_seconds=0):
-    """Open a video, seek to a frame, run detection, and let user click to identify.
+def browse_and_select(video_path, tracker, team_classifier=None, target_team=None,
+                      start_seconds=0):
+    """Browse video frames with arrow keys to find yourself, then click.
+
+    Controls:
+        Right arrow / 'd': jump forward 5 seconds
+        Left arrow / 'a': jump back 5 seconds
+        Space: jump forward 30 seconds
+        'b': jump back 30 seconds
+        Click: select a player
+        'q': cancel
 
     Returns (track_id, frame_number) or (None, None).
     """
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration_sec = total_frames / fps
 
-    # Seek to the requested time
-    if seek_seconds > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(seek_seconds * fps))
+    current_sec = start_seconds
+    selected_id = [None]
+    window_name = "Browse: arrow keys to navigate, click to select, 'q' to cancel"
 
-    ret, frame = cap.read()
-    if not ret:
-        print("Could not read video frame.")
-        cap.release()
-        return None, None
+    def on_click(event, x, y, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        tracked = param.get("tracked", [])
+        best_tid = None
+        best_area = float("inf")
+        for player in tracked:
+            bx1, by1, bx2, by2 = [int(v) for v in player["bbox"]]
+            if bx1 <= x <= bx2 and by1 <= y <= by2:
+                area = (bx2 - bx1) * (by2 - by1)
+                if area < best_area:
+                    best_area = area
+                    best_tid = player["track_id"]
+        if best_tid is not None:
+            selected_id[0] = best_tid
 
-    frame_num = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+    click_state = {"tracked": []}
 
-    # Run tracking on this frame
-    tracked = tracker.update(frame, frame_num)
+    while True:
+        # Seek to current time
+        current_sec = max(0, min(current_sec, duration_sec - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(current_sec * fps))
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-    if not tracked:
-        print("No players detected in this frame. Try a different time.")
-        cap.release()
-        return None, None
+        frame_num = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
-    # Build team filter if requested
-    team_track_ids = None
-    if team_classifier and target_team:
-        team_results = team_classifier.classify_all(frame, tracked)
-        team_track_ids = [
-            tid for tid, (team, _) in team_results.items()
-            if team == target_team
-        ]
-        print(f"Found {len(team_track_ids)} {target_team} team players "
-              f"out of {len(tracked)} total")
+        # Detect players in this frame
+        tracked = tracker.update(frame, frame_num)
+        click_state["tracked"] = tracked
 
-    title = f"Click on yourself (#{target_team} team highlighted)" if target_team else "Click on yourself"
-    selected = select_player_from_frame(frame, tracked, team_filter=team_track_ids, title=title)
+        # Classify teams if available
+        team_track_ids = None
+        if team_classifier and target_team and tracked:
+            team_results = team_classifier.classify_all(frame, tracked)
+            team_track_ids = [
+                tid for tid, (team, _) in team_results.items()
+                if team == target_team
+            ]
 
+        # Draw frame
+        display = frame.copy()
+        for player in tracked:
+            tid = player["track_id"]
+            x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
+            if team_track_ids and tid in team_track_ids:
+                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            else:
+                cv2.rectangle(display, (x1, y1), (x2, y2), (100, 100, 100), 1)
+
+        time_str = f"{int(current_sec // 60)}:{int(current_sec % 60):02d}"
+        players_str = f"{len(team_track_ids or [])} {target_team}" if team_track_ids else f"{len(tracked)} total"
+        cv2.putText(display, f"Time: {time_str} | Players: {players_str} | arrows=nav, click=select, q=cancel",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+        cv2.imshow(window_name, display)
+        cv2.setMouseCallback(window_name, on_click, click_state)
+
+        key = cv2.waitKey(0) & 0xFF
+
+        if selected_id[0] is not None:
+            break
+        if key == ord("q"):
+            break
+        elif key == ord("d") or key == 83:  # right arrow
+            current_sec += 5
+        elif key == ord("a") or key == 81:  # left arrow
+            current_sec -= 5
+        elif key == ord(" "):  # space = jump 30s
+            current_sec += 30
+        elif key == ord("b"):  # b = back 30s
+            current_sec -= 30
+
+    cv2.destroyAllWindows()
     cap.release()
 
-    if selected is not None:
-        print(f"Selected track ID: {selected}")
+    if selected_id[0] is not None:
+        print(f"Selected track {selected_id[0]} at {time_str}", flush=True)
     else:
-        print("No player selected.")
+        print("No player selected.", flush=True)
 
-    return selected, frame_num
+    return selected_id[0], frame_num if selected_id[0] else None

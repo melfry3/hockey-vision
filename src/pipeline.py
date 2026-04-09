@@ -8,7 +8,7 @@ import numpy as np
 from .tracker import PlayerTracker
 from .jersey import JerseyReader
 from .team_color import TeamClassifier
-from .identify import select_player_from_frame
+from .identify import browse_and_select
 from .analytics import SkatingAnalytics
 from .pose import PoseAnalyzer
 from .visualizer import (
@@ -20,103 +20,79 @@ from .visualizer import (
 )
 
 
-def _process_single_video(video_path, tracker, jersey_reader, jersey_number,
-                          sample_rate, frame_offset=0, skip_seconds=0):
-    """Process a single video clip, returning jersey votes and frame count.
-
-    frame_offset: added to frame numbers so multi-clip frame counts are continuous.
-    skip_seconds: skip this many seconds from the start (e.g., to skip warmup).
-    """
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration_min = total_frames / fps / 60
-
-    print(f"\n  Clip: {os.path.basename(video_path)}")
-    print(f"  {width}x{height} @ {fps:.1f} fps, {duration_min:.1f} min")
-
-    # Skip warmup if requested
-    skip_frames = int(skip_seconds * fps)
-    if skip_frames > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, skip_frames)
-        print(f"  Skipping first {skip_seconds}s (warmup)")
-
-    jersey_votes = {}
-    frame_num = skip_frames
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if frame_num % sample_rate != 0:
-            frame_num += 1
-            continue
-
-        global_frame = frame_offset + frame_num
-        tracked = tracker.update(frame, global_frame)
-
-        # Try to read jersey numbers periodically
-        if frame_num % (sample_rate * 10) == 0 and tracked:
-            match_id = jersey_reader.identify_target(frame, tracked, jersey_number)
-            if match_id is not None:
-                jersey_votes[match_id] = jersey_votes.get(match_id, 0) + 1
-
-        if frame_num % (int(fps) * 30) == 0:
-            elapsed_min = frame_num / fps / 60
-            print(f"    {elapsed_min:.1f} min...")
-
-        frame_num += 1
-
-    cap.release()
-    return jersey_votes, frame_num, fps
-
-
 def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
-                 skip_warmup_seconds=0, team_color=None):
+                 skip_warmup_seconds=0, team_color=None, identify_at=None):
     """Full game analysis pipeline. Supports single video or multiple clips.
 
-    Player identification strategy:
-    1. Track all players across all clips
-    2. Classify each track by team color (white vs dark)
-    3. Filter to your team
-    4. Try jersey OCR on your team's players
-    5. If OCR fails, show a frame and let you click on yourself
+    Player identification:
+    1. Open video browser at identify_at time (or warmup+60s)
+    2. User clicks on themselves (team color highlights white vs dark)
+    3. Run full tracking pass, following the selected player by appearance
+       proximity to the initial selection
 
-    video_paths: single path string or list of paths for multi-clip games.
-    jersey_number: your number (e.g., 83).
+    video_paths: single path string or list of paths.
+    jersey_number: your number.
     skip_warmup_seconds: seconds to skip at the start of the first clip.
     team_color: 'white' or 'dark'.
+    identify_at: seconds into first clip to show identification frame.
     """
     config = config or {}
     os.makedirs(output_dir, exist_ok=True)
 
-    # Normalize to list
     if isinstance(video_paths, str):
         video_paths = [video_paths]
 
     sample_rate = config.get("fps_sample_rate", 5)
 
-    print(f"=== Game Analysis ===")
-    print(f"Jersey #{jersey_number}" + (f" ({team_color})" if team_color else ""))
-    print(f"Clips: {len(video_paths)}")
+    print(f"=== Game Analysis ===", flush=True)
+    print(f"Jersey #{jersey_number}" + (f" ({team_color})" if team_color else ""), flush=True)
+    print(f"Clips: {len(video_paths)}", flush=True)
     print(f"Sampling every {sample_rate} frames", flush=True)
 
-    tracker = PlayerTracker()
-    jersey_reader = JerseyReader()
     team_classifier = TeamClassifier()
 
-    # Phase 1: Track across all clips, classify team colors
-    print("\n--- Phase 1: Tracking players and classifying teams ---", flush=True)
-    all_jersey_votes = {}
-    team_votes = {}
+    # ---------------------------------------------------------------
+    # Phase 0: Identify yourself
+    # ---------------------------------------------------------------
+    browse_start = identify_at if identify_at else skip_warmup_seconds + 60
+    print(f"\n--- Phase 0: Identify yourself ---", flush=True)
+    print(f"Opening video at {browse_start}s — navigate to a frame where "
+          "you're on the ice, then click on yourself.", flush=True)
+    print("  Right/d: +5s | Left/a: -5s | Space: +30s | b: -30s | q: cancel",
+          flush=True)
+
+    id_tracker = PlayerTracker()
+    selected_track, selected_frame = browse_and_select(
+        video_paths[0], id_tracker,
+        team_classifier=team_classifier,
+        target_team=team_color,
+        start_seconds=browse_start,
+    )
+
+    if selected_track is None:
+        print("No player selected. Cannot continue.", flush=True)
+        return None
+
+    # Get the selected player's position to match in the full pass
+    selected_positions = id_tracker.get_track(selected_track)
+    if not selected_positions:
+        print("Could not get position for selected player.", flush=True)
+        return None
+
+    # Use the last known position as the anchor point
+    _, _, anchor_center = selected_positions[-1]
+    anchor_frame = selected_positions[-1][0]
+    print(f"Anchor: track {selected_track} at frame {anchor_frame}, "
+          f"position ({anchor_center[0]:.0f}, {anchor_center[1]:.0f})", flush=True)
+
+    # ---------------------------------------------------------------
+    # Phase 1: Full tracking pass
+    # ---------------------------------------------------------------
+    print(f"\n--- Phase 1: Tracking all players ---", flush=True)
+    tracker = PlayerTracker()
     frame_offset = 0
     game_fps = 30
-    id_frame = None       # save a good frame for manual selection
-    id_frame_tracked = None
-    id_frame_num = None
+    target_track_id = None
 
     for i, path in enumerate(video_paths):
         skip = skip_warmup_seconds if i == 0 else 0
@@ -128,7 +104,7 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration_min = total_frames / fps / 60
 
-        print(f"\n  Clip: {os.path.basename(path)}")
+        print(f"\n  Clip: {os.path.basename(path)}", flush=True)
         print(f"  {width}x{height} @ {fps:.1f} fps, {duration_min:.1f} min", flush=True)
 
         if i == 0:
@@ -152,30 +128,26 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
             global_frame = frame_offset + frame_num
             tracked = tracker.update(frame, global_frame)
 
-            # Classify team colors every 10th sampled frame
-            if frame_num % (sample_rate * 10) == 0 and tracked:
-                team_votes = team_classifier.build_team_votes(
-                    frame, tracked, existing_votes=team_votes
-                )
-                # Also try jersey OCR on team-filtered players
-                if team_color:
-                    team_players = team_classifier.filter_by_team(
-                        frame, tracked, team_color
-                    )
-                else:
-                    team_players = tracked
-                match_id = jersey_reader.identify_target(
-                    frame, team_players, jersey_number
-                )
-                if match_id is not None:
-                    all_jersey_votes[match_id] = all_jersey_votes.get(match_id, 0) + 1
-
-            # Save a mid-game frame for manual selection fallback
-            if i == 0 and id_frame is None and frame_num > skip_frames + int(fps * 30):
-                if tracked and len(tracked) >= 5:
-                    id_frame = frame.copy()
-                    id_frame_tracked = tracked[:]
-                    id_frame_num = global_frame
+            # At the anchor frame, find which track is closest to where
+            # the user clicked
+            if target_track_id is None and tracked:
+                anchor_frame_in_clip = anchor_frame - frame_offset
+                if abs(frame_num - anchor_frame_in_clip) < sample_rate * 2:
+                    best_tid = None
+                    best_dist = float("inf")
+                    for player in tracked:
+                        cx, cy = player["center"]
+                        dist = np.sqrt(
+                            (cx - anchor_center[0]) ** 2 +
+                            (cy - anchor_center[1]) ** 2
+                        )
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_tid = player["track_id"]
+                    if best_tid is not None and best_dist < 100:
+                        target_track_id = best_tid
+                        print(f"  Matched to track {target_track_id} "
+                              f"(distance: {best_dist:.0f}px)", flush=True)
 
             if frame_num % (int(fps) * 30) == 0:
                 elapsed_min = frame_num / fps / 60
@@ -186,112 +158,68 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
         cap.release()
         frame_offset += frame_num
 
-    # Phase 1b: Identify target player
-    target_track_id = None
+    if target_track_id is None:
+        print("Could not match selected player in full tracking pass.", flush=True)
+        return None
 
-    # Strategy A: Jersey OCR matched
-    if all_jersey_votes:
-        target_track_id = max(all_jersey_votes, key=all_jersey_votes.get)
-        total_votes = sum(all_jersey_votes.values())
-        confidence = all_jersey_votes[target_track_id] / max(total_votes, 1)
-        print(f"\nJersey OCR identified #{jersey_number} as track {target_track_id} "
-              f"({all_jersey_votes[target_track_id]} detections, {confidence:.0%} confidence)",
-              flush=True)
-        # If very low confidence, fall through to manual
-        if all_jersey_votes[target_track_id] < 3:
-            print("Low confidence — falling back to manual selection.", flush=True)
-            target_track_id = None
-
-    # Strategy B: Manual click-to-identify
-    if target_track_id is None and id_frame is not None:
-        print(f"\nJersey OCR couldn't reliably find #{jersey_number}.", flush=True)
-        print("Opening a frame for manual identification...", flush=True)
-
-        # Get team-filtered track IDs
-        team_track_ids = None
-        if team_color and team_votes:
-            team_track_ids = team_classifier.get_team_tracks(
-                team_votes, team_color, min_votes=3, min_ratio=0.6
-            )
-            # Filter id_frame_tracked to only include tracks in team_track_ids
-            filtered_tracked = [
-                p for p in id_frame_tracked
-                if p["track_id"] in team_track_ids
-            ] if team_track_ids else id_frame_tracked
-            print(f"Showing {len(filtered_tracked)} {team_color} team players "
-                  f"(green boxes). Click on yourself.", flush=True)
-        else:
-            filtered_tracked = id_frame_tracked
-            team_track_ids = None
-
-        target_track_id = select_player_from_frame(
-            id_frame, filtered_tracked,
-            team_filter=team_track_ids,
-            title=f"Click on yourself (#{jersey_number} {team_color or ''})"
-        )
-
-        if target_track_id is not None:
-            print(f"Selected track {target_track_id}", flush=True)
-        else:
-            print("No player selected.", flush=True)
-
-    # Phase 2: Compute analytics for target player
-    print("\n--- Phase 2: Computing analytics ---")
+    # ---------------------------------------------------------------
+    # Phase 2: Compute analytics
+    # ---------------------------------------------------------------
+    print(f"\n--- Phase 2: Computing analytics ---", flush=True)
     analytics = SkatingAnalytics(fps=game_fps, sample_rate=sample_rate)
 
-    if target_track_id:
-        positions = tracker.get_track(target_track_id)
-        shifts = analytics.shift_summary(positions)
-        total_distance = analytics.compute_distance(positions)
-        ice_time = analytics.compute_ice_time(positions)
-        heatmap = analytics.compute_heatmap(positions)
-        speeds = analytics.compute_speed(positions)
-        avg_speed = np.mean([s for _, s in speeds]) if speeds else 0.0
-        max_speed = max([s for _, s in speeds]) if speeds else 0.0
+    positions = tracker.get_track(target_track_id)
+    shifts = analytics.shift_summary(positions)
+    total_distance = analytics.compute_distance(positions)
+    ice_time = analytics.compute_ice_time(positions)
+    heatmap = analytics.compute_heatmap(positions)
+    speeds = analytics.compute_speed(positions)
+    avg_speed = np.mean([s for _, s in speeds]) if speeds else 0.0
+    max_speed = max([s for _, s in speeds]) if speeds else 0.0
 
-        stats = {
-            "jersey_number": jersey_number,
-            "team_color": team_color,
-            "track_id": target_track_id,
-            "clips": [os.path.basename(p) for p in video_paths],
-            "total_ice_time_sec": round(ice_time, 1),
-            "total_ice_time_min": round(ice_time / 60, 1),
-            "total_distance_px": round(total_distance, 1),
-            "avg_speed_px_sec": round(avg_speed, 1),
-            "max_speed_px_sec": round(max_speed, 1),
-            "num_shifts": len(shifts),
-            "avg_shift_duration_sec": round(
-                np.mean([s["duration_sec"] for s in shifts]), 1
-            ) if shifts else 0,
-            "shifts": shifts,
-        }
+    stats = {
+        "jersey_number": jersey_number,
+        "team_color": team_color,
+        "track_id": target_track_id,
+        "clips": [os.path.basename(p) for p in video_paths],
+        "total_ice_time_sec": round(ice_time, 1),
+        "total_ice_time_min": round(ice_time / 60, 1),
+        "total_distance_px": round(total_distance, 1),
+        "avg_speed_px_sec": round(avg_speed, 1),
+        "max_speed_px_sec": round(max_speed, 1),
+        "num_shifts": len(shifts),
+        "avg_shift_duration_sec": round(
+            np.mean([s["duration_sec"] for s in shifts]), 1
+        ) if shifts else 0,
+        "shifts": shifts,
+    }
 
-        # Save outputs
-        stats_path = os.path.join(output_dir, "game_stats.json")
-        with open(stats_path, "w") as f:
-            json.dump(stats, f, indent=2)
-        print(f"  Saved stats: {stats_path}")
+    # Save outputs
+    stats_path = os.path.join(output_dir, "game_stats.json")
+    with open(stats_path, "w") as f:
+        json.dump(stats, f, indent=2)
+    print(f"  Saved stats: {stats_path}", flush=True)
 
-        heatmap_path = os.path.join(output_dir, "heatmap.png")
-        render_heatmap(heatmap, heatmap_path, f"#{jersey_number} Position Heatmap")
-        print(f"  Saved heatmap: {heatmap_path}")
+    heatmap_path = os.path.join(output_dir, "heatmap.png")
+    render_heatmap(heatmap, heatmap_path, f"#{jersey_number} Position Heatmap")
+    print(f"  Saved heatmap: {heatmap_path}", flush=True)
 
-        if shifts:
-            shifts_path = os.path.join(output_dir, "shifts.png")
-            render_shift_chart(shifts, shifts_path)
-            print(f"  Saved shift chart: {shifts_path}")
+    if shifts:
+        shifts_path = os.path.join(output_dir, "shifts.png")
+        render_shift_chart(shifts, shifts_path)
+        print(f"  Saved shift chart: {shifts_path}", flush=True)
 
-        print(f"\n--- Results for #{jersey_number} ---")
-        print(f"  Ice time: {stats['total_ice_time_min']} min")
-        print(f"  Shifts: {stats['num_shifts']}")
-        print(f"  Avg shift: {stats['avg_shift_duration_sec']}s")
-        print(f"  Avg speed: {stats['avg_speed_px_sec']:.0f} px/s")
-        print(f"  Max speed: {stats['max_speed_px_sec']:.0f} px/s")
-        for s in shifts:
-            print(f"    Shift {s['shift_number']}: {s['duration_sec']}s")
+    print(f"\n--- Results for #{jersey_number} ---", flush=True)
+    print(f"  Ice time: {stats['total_ice_time_min']} min", flush=True)
+    print(f"  Shifts: {stats['num_shifts']}", flush=True)
+    print(f"  Avg shift: {stats['avg_shift_duration_sec']}s", flush=True)
+    print(f"  Avg speed: {stats['avg_speed_px_sec']:.0f} px/s", flush=True)
+    print(f"  Max speed: {stats['max_speed_px_sec']:.0f} px/s", flush=True)
+    for s in shifts:
+        print(f"    Shift {s['shift_number']}: {s['duration_sec']}s", flush=True)
 
-    print("\nDone.")
-    return stats if target_track_id else None
+    print("\nDone.", flush=True)
+    return stats
 
 
 def analyze_skills(video_path, output_dir="output", config=None):
@@ -299,10 +227,6 @@ def analyze_skills(video_path, output_dir="output", config=None):
 
     Focuses on pose estimation and form metrics rather than player identification.
     Useful for skills classes where you're the primary subject.
-
-    1. Run pose estimation on each frame
-    2. Compute form metrics (knee bend, forward lean, stride width)
-    3. Generate summary and annotated video
     """
     config = config or {}
     os.makedirs(output_dir, exist_ok=True)
@@ -314,18 +238,17 @@ def analyze_skills(video_path, output_dir="output", config=None):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     sample_rate = config.get("fps_sample_rate", 5)
 
-    print(f"Video: {width}x{height} @ {fps:.1f} fps, {total_frames} frames")
-    print(f"Skills analysis mode — pose estimation")
+    print(f"Video: {width}x{height} @ {fps:.1f} fps, {total_frames} frames", flush=True)
+    print(f"Skills analysis mode — pose estimation", flush=True)
 
     pose_analyzer = PoseAnalyzer()
 
-    # Set up output video
     out_path = os.path.join(output_dir, "skills_annotated.mp4")
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out_video = cv2.VideoWriter(out_path, fourcc, fps / sample_rate, (width, height))
 
     frame_num = 0
-    print("\n--- Analyzing poses ---")
+    print("\n--- Analyzing poses ---", flush=True)
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -337,14 +260,12 @@ def analyze_skills(video_path, output_dir="output", config=None):
 
         poses = pose_analyzer.analyze_frame(frame, frame_num)
 
-        # Draw pose overlays on frame
         annotated = frame.copy()
         for pose in poses:
             annotated = draw_pose_overlay(
                 annotated, pose["keypoints"], pose["keypoint_conf"]
             )
 
-            # Add form metrics as text overlay
             knee = pose_analyzer.compute_knee_bend(pose["keypoints"], pose["keypoint_conf"])
             lean = pose_analyzer.compute_forward_lean(pose["keypoints"], pose["keypoint_conf"])
             y_offset = 30
@@ -363,14 +284,13 @@ def analyze_skills(video_path, output_dir="output", config=None):
 
         if frame_num % (int(fps) * 30) == 0:
             elapsed_min = frame_num / fps / 60
-            print(f"  Processed {elapsed_min:.1f} min...")
+            print(f"  Processed {elapsed_min:.1f} min...", flush=True)
 
         frame_num += 1
 
     out_video.release()
     cap.release()
 
-    # Generate summary
     summary = pose_analyzer.summarize_session()
     stats = {"mode": "skills", "summary": summary}
 
@@ -378,21 +298,21 @@ def analyze_skills(video_path, output_dir="output", config=None):
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
 
-    print(f"\n--- Skills Session Summary ---")
+    print(f"\n--- Skills Session Summary ---", flush=True)
     if "knee_bend" in summary:
         kb = summary["knee_bend"]
-        print(f"  Knee bend: avg {kb['mean']:.0f} deg (range {kb['min']:.0f}-{kb['max']:.0f})")
+        print(f"  Knee bend: avg {kb['mean']:.0f} deg (range {kb['min']:.0f}-{kb['max']:.0f})", flush=True)
         if kb["mean"] > 140:
-            print(f"    -> Too upright! Aim for 90-120 degrees for better power.")
+            print(f"    -> Too upright! Aim for 90-120 degrees for better power.", flush=True)
         elif kb["mean"] < 90:
-            print(f"    -> Very deep bend — great for explosiveness.")
+            print(f"    -> Very deep bend — great for explosiveness.", flush=True)
     if "forward_lean" in summary:
         fl = summary["forward_lean"]
-        print(f"  Forward lean: avg {fl['mean']:.0f} deg (range {fl['min']:.0f}-{fl['max']:.0f})")
+        print(f"  Forward lean: avg {fl['mean']:.0f} deg (range {fl['min']:.0f}-{fl['max']:.0f})", flush=True)
         if fl["mean"] < 15:
-            print(f"    -> Too upright. Lean forward more for speed and balance.")
+            print(f"    -> Too upright. Lean forward more for speed and balance.", flush=True)
 
-    print(f"\n  Annotated video: {out_path}")
-    print(f"  Stats: {stats_path}")
-    print("Done.")
+    print(f"\n  Annotated video: {out_path}", flush=True)
+    print(f"  Stats: {stats_path}", flush=True)
+    print("Done.", flush=True)
     return stats
