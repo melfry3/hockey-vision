@@ -145,6 +145,6 @@ Edit `config.yaml` to adjust detection confidence, sampling rate, and analysis p
 - **Detection**: YOLOv11 (ultralytics)
 - **Tracking**: ByteTrack
 - **Pose estimation**: YOLOv11-pose
-- **Jersey OCR**: PaddleOCR
+- **Jersey OCR**: EasyOCR
 - **Homography**: OpenCV
 - **AI Coaching**: Claude (Anthropic API)

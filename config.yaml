@@ -8,7 +8,7 @@ team_color: null
 
 # Detection settings
 detection:
-  model: "yolo11m.pt"         # YOLOv11 medium — good balance of speed/accuracy
+  model: "yolo11l.pt"          # YOLOv11 large — better accuracy with GPU
   confidence: 0.4              # Minimum detection confidence
   person_class_id: 0           # COCO class ID for person
 

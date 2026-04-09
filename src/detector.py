@@ -6,7 +6,7 @@ from ultralytics import YOLO
 class PlayerDetector:
     """Detects players in video frames using YOLOv11."""
 
-    def __init__(self, model_path="yolo11m.pt", confidence=0.2):
+    def __init__(self, model_path="yolo11l.pt", confidence=0.2):
         self.model = YOLO(model_path)
         self.confidence = confidence
         self.person_class_id = 0  # COCO 'person'
