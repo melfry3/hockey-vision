@@ -138,20 +138,30 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
                 if team == target_team
             ]
 
-        # Draw frame
+        # Draw frame — show ALL detections so user can see what's found
         display = frame.copy()
+        white_count = 0
+        dark_count = 0
         for player in tracked:
             tid = player["track_id"]
             x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
             if team_track_ids and tid in team_track_ids:
-                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # Your team — green, thick, with label
+                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                cv2.putText(display, "YOUR TEAM", (x1, y1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                white_count += 1
             else:
-                cv2.rectangle(display, (x1, y1), (x2, y2), (100, 100, 100), 1)
+                # Other players — red, thin
+                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                dark_count += 1
 
         time_str = f"{int(current_sec // 60)}:{int(current_sec % 60):02d}"
-        players_str = f"{len(team_track_ids or [])} {target_team}" if team_track_ids else f"{len(tracked)} total"
-        cv2.putText(display, f"Time: {time_str} | Players: {players_str} | arrows=nav, click=select, q=cancel",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        info = f"Time: {time_str} | Detected: {len(tracked)} ({white_count} {target_team or 'your'} team, {dark_count} other)"
+        cv2.putText(display, info, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.putText(display, "d/a=5s  space/b=30s  click=select  q=cancel", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
         cv2.imshow(window_name, display)
         cv2.setMouseCallback(window_name, on_click)
