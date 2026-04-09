@@ -86,13 +86,22 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
           f"position ({anchor_center[0]:.0f}, {anchor_center[1]:.0f})", flush=True)
 
     # ---------------------------------------------------------------
-    # Phase 1: Full tracking pass
+    # Phase 1: Full tracking pass with re-identification
     # ---------------------------------------------------------------
     print(f"\n--- Phase 1: Tracking all players ---", flush=True)
+    print(f"Will re-identify you when track is lost.", flush=True)
     tracker = PlayerTracker()
+    team_classifier = TeamClassifier()
     frame_offset = 0
     game_fps = 30
-    target_track_id = None
+
+    # Track re-identification state
+    current_track_id = None
+    last_known_center = anchor_center
+    all_my_positions = []  # unified position list across track ID changes
+    frames_since_seen = 0
+    max_reacquire_dist = 150  # max pixels to match when reacquiring
+    lost_threshold = int(10 * 30 / sample_rate)  # ~10 sec of frames before giving up
 
     for i, path in enumerate(video_paths):
         skip = skip_warmup_seconds if i == 0 else 0
@@ -128,39 +137,95 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
             global_frame = frame_offset + frame_num
             tracked = tracker.update(frame, global_frame)
 
-            # At the anchor frame, find which track is closest to where
-            # the user clicked
-            if target_track_id is None and tracked:
-                anchor_frame_in_clip = anchor_frame - frame_offset
-                if abs(frame_num - anchor_frame_in_clip) < sample_rate * 2:
-                    best_tid = None
-                    best_dist = float("inf")
-                    for player in tracked:
-                        cx, cy = player["center"]
-                        dist = np.sqrt(
-                            (cx - anchor_center[0]) ** 2 +
-                            (cy - anchor_center[1]) ** 2
-                        )
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_tid = player["track_id"]
-                    if best_tid is not None and best_dist < 100:
-                        target_track_id = best_tid
-                        print(f"  Matched to track {target_track_id} "
-                              f"(distance: {best_dist:.0f}px)", flush=True)
+            if tracked:
+                # Check if our current track is still alive
+                current_player = None
+                if current_track_id is not None:
+                    for p in tracked:
+                        if p["track_id"] == current_track_id:
+                            current_player = p
+                            break
+
+                if current_player is not None:
+                    # Still tracking — record position
+                    last_known_center = current_player["center"]
+                    all_my_positions.append((
+                        global_frame,
+                        current_player["bbox"],
+                        current_player["center"],
+                    ))
+                    frames_since_seen = 0
+                else:
+                    # Lost track — try to reacquire by proximity
+                    frames_since_seen += 1
+
+                    if frames_since_seen <= lost_threshold:
+                        # Filter to team color if available
+                        if team_color:
+                            candidates = team_classifier.filter_by_team(
+                                frame, tracked, team_color
+                            )
+                        else:
+                            candidates = tracked
+
+                        best_tid = None
+                        best_dist = float("inf")
+                        for p in candidates:
+                            cx, cy = p["center"]
+                            dist = np.sqrt(
+                                (cx - last_known_center[0]) ** 2 +
+                                (cy - last_known_center[1]) ** 2
+                            )
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_tid = p["track_id"]
+                                best_center = p["center"]
+                                best_bbox = p["bbox"]
+
+                        if best_tid is not None and best_dist < max_reacquire_dist:
+                            current_track_id = best_tid
+                            last_known_center = best_center
+                            all_my_positions.append((
+                                global_frame, best_bbox, best_center,
+                            ))
+                            frames_since_seen = 0
+
+                # Initial acquisition at the anchor frame
+                if current_track_id is None and frames_since_seen == 0:
+                    anchor_frame_in_clip = anchor_frame
+                    if abs(global_frame - anchor_frame_in_clip) < sample_rate * 3:
+                        best_tid = None
+                        best_dist = float("inf")
+                        for p in tracked:
+                            cx, cy = p["center"]
+                            dist = np.sqrt(
+                                (cx - anchor_center[0]) ** 2 +
+                                (cy - anchor_center[1]) ** 2
+                            )
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_tid = p["track_id"]
+                        if best_tid is not None and best_dist < 100:
+                            current_track_id = best_tid
+                            print(f"  Acquired track {current_track_id} "
+                                  f"(distance: {best_dist:.0f}px)", flush=True)
 
             if frame_num % (int(fps) * 30) == 0:
                 elapsed_min = frame_num / fps / 60
-                print(f"    {elapsed_min:.1f} min...", flush=True)
+                print(f"    {elapsed_min:.1f} min... "
+                      f"(tracking: {'YES' if frames_since_seen == 0 else f'lost {frames_since_seen}'})",
+                      flush=True)
 
             frame_num += 1
 
         cap.release()
         frame_offset += frame_num
 
-    if target_track_id is None:
-        print("Could not match selected player in full tracking pass.", flush=True)
+    if not all_my_positions:
+        print("Could not track you in any frames.", flush=True)
         return None
+
+    print(f"\nTracked you across {len(all_my_positions)} frames.", flush=True)
 
     # ---------------------------------------------------------------
     # Phase 2: Compute analytics
@@ -168,7 +233,7 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
     print(f"\n--- Phase 2: Computing analytics ---", flush=True)
     analytics = SkatingAnalytics(fps=game_fps, sample_rate=sample_rate)
 
-    positions = tracker.get_track(target_track_id)
+    positions = all_my_positions
     shifts = analytics.shift_summary(positions)
     total_distance = analytics.compute_distance(positions)
     ice_time = analytics.compute_ice_time(positions)
@@ -180,7 +245,7 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
     stats = {
         "jersey_number": jersey_number,
         "team_color": team_color,
-        "track_id": target_track_id,
+        "track_id": current_track_id,
         "clips": [os.path.basename(p) for p in video_paths],
         "total_ice_time_sec": round(ice_time, 1),
         "total_ice_time_min": round(ice_time / 60, 1),

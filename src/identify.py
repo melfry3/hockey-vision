@@ -86,25 +86,34 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
 
     current_sec = start_seconds
     selected_id = [None]
-    window_name = "Browse: arrow keys to navigate, click to select, 'q' to cancel"
+    current_tracked = [None]  # mutable ref to current frame's tracked players
+    window_name = "Browse: d/a=5s, space/b=30s, click=select, q=cancel"
 
     def on_click(event, x, y, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        tracked = param.get("tracked", [])
+        tracked = current_tracked[0] or []
         best_tid = None
-        best_area = float("inf")
+        best_dist = float("inf")
         for player in tracked:
             bx1, by1, bx2, by2 = [int(v) for v in player["bbox"]]
+            # Check if click is inside bbox
             if bx1 <= x <= bx2 and by1 <= y <= by2:
-                area = (bx2 - bx1) * (by2 - by1)
-                if area < best_area:
-                    best_area = area
+                cx, cy = player["center"]
+                dist = abs(cx - x) + abs(cy - y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_tid = player["track_id"]
+        # If no bbox hit, find nearest player by center distance
+        if best_tid is None:
+            for player in tracked:
+                cx, cy = player["center"]
+                dist = abs(cx - x) + abs(cy - y)
+                if dist < best_dist and dist < 150:
+                    best_dist = dist
                     best_tid = player["track_id"]
         if best_tid is not None:
             selected_id[0] = best_tid
-
-    click_state = {"tracked": []}
 
     while True:
         # Seek to current time
@@ -118,7 +127,7 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
 
         # Detect players in this frame
         tracked = tracker.update(frame, frame_num)
-        click_state["tracked"] = tracked
+        current_tracked[0] = tracked
 
         # Classify teams if available
         team_track_ids = None
@@ -145,7 +154,7 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         cv2.imshow(window_name, display)
-        cv2.setMouseCallback(window_name, on_click, click_state)
+        cv2.setMouseCallback(window_name, on_click)
 
         key = cv2.waitKey(0) & 0xFF
 
@@ -153,11 +162,11 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
             break
         if key == ord("q"):
             break
-        elif key == ord("d") or key == 83:  # right arrow
+        elif key == ord("d") or key == ord("l") or key in (83, 3):  # right arrow
             current_sec += 5
-        elif key == ord("a") or key == 81:  # left arrow
+        elif key == ord("a") or key == ord("j") or key in (81, 2):  # left arrow
             current_sec -= 5
-        elif key == ord(" "):  # space = jump 30s
+        elif key == ord(" ") or key == ord("f"):  # space/f = jump 30s
             current_sec += 30
         elif key == ord("b"):  # b = back 30s
             current_sec -= 30
