@@ -31,21 +31,64 @@ Every analysis automatically saves to your session history. The AI coach (powere
 
 ## Setup
 
-```bash
+### Prerequisites
+- **Python 3.12+** — [Download](https://www.python.org/downloads/) (check "Add to PATH" during install)
+- **NVIDIA GPU** (optional but recommended) — CUDA 12.8+ for GPU acceleration
+
+### Install
+
+**PowerShell (Windows):**
+```powershell
 python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
+.\venv\Scripts\Activate.ps1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
+
+**Bash (Linux/Mac/WSL):**
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install torch torchvision
+pip install -r requirements.txt
+```
+
+> **Troubleshooting venv:** If `.\venv\Scripts\Activate.ps1` fails, you may need to set the execution policy first:
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+> ```
+> If the venv folder wasn't created at all, check that Python is properly installed (`python --version` should show output).
 
 YOLO model weights download automatically on first run.
 
 Set your API key for AI coaching:
+```powershell
+$env:ANTHROPIC_API_KEY = "your-key-here"   # PowerShell
+```
 ```bash
-export ANTHROPIC_API_KEY=your-key-here
+export ANTHROPIC_API_KEY=your-key-here     # Bash
 ```
 
 ## Usage
 
+**PowerShell** — use backtick `` ` `` for line continuation:
+```powershell
+# Analyze a game — track jersey #17
+python main.py game "C:\path\to\game.mp4" -j 17
+
+# Multi-period game with options
+python main.py game `
+  "C:\path\to\period1.mp4" `
+  "C:\path\to\period2.mp4" `
+  "C:\path\to\period3.mp4" `
+  -j 83 --color white --skip-warmup 600 `
+  --label "2026-04-03-ice-ranch-league" --no-coach
+
+# Analyze a skills session
+python main.py skills "C:\path\to\skills.mp4" --label "2026-04-07-skills-class"
+```
+
+**Bash:**
 ```bash
 # Analyze a game — track jersey #17
 python main.py game path/to/game.mp4 --jersey 17
@@ -55,9 +98,10 @@ python main.py game path/to/game.mp4 -j 17 --label "2026-04-07-league"
 
 # Analyze a skills session
 python main.py skills path/to/skills.mp4 --label "2026-04-07-skills-class"
+```
 
-# Skip AI coaching feedback
-python main.py game path/to/game.mp4 -j 17 --no-coach
+**Common commands (both shells):**
+```bash
 
 # Ask your AI coach anything
 python main.py ask "How can I improve my first stride?"
