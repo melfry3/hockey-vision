@@ -129,14 +129,16 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
         tracked = tracker.update(frame, frame_num)
         current_tracked[0] = tracked
 
-        # Classify teams if available
+        # Classify teams for this frame
+        team_results = {}
         team_track_ids = None
-        if team_classifier and target_team and tracked:
+        if team_classifier and tracked:
             team_results = team_classifier.classify_all(frame, tracked)
-            team_track_ids = [
-                tid for tid, (team, _) in team_results.items()
-                if team == target_team
-            ]
+            if target_team:
+                team_track_ids = [
+                    tid for tid, (team, _) in team_results.items()
+                    if team == target_team
+                ]
 
         # Draw frame — show ALL detections so user can see what's found
         display = frame.copy()
@@ -145,15 +147,20 @@ def browse_and_select(video_path, tracker, team_classifier=None, target_team=Non
         for player in tracked:
             tid = player["track_id"]
             x1, y1, x2, y2 = [int(v) for v in player["bbox"]]
+            team_label, score = team_results.get(tid, ("?", 0))
             if team_track_ids and tid in team_track_ids:
-                # Your team — green, thick, with label
+                # Your team — green, thick
                 cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                cv2.putText(display, "YOUR TEAM", (x1, y1 - 8),
+                label = f"T{tid} S={score:.0f}"
+                cv2.putText(display, label, (x1, y1 - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 white_count += 1
             else:
-                # Other players — red, thin
-                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                # Other players — red
+                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                label = f"T{tid} S={score:.0f}"
+                cv2.putText(display, label, (x1, y1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                 dark_count += 1
 
         time_str = f"{int(current_sec // 60)}:{int(current_sec % 60):02d}"
