@@ -5,16 +5,20 @@ import numpy as np
 
 
 class TeamClassifier:
-    """Classify players as white or dark team based on jersey color."""
+    """Classify players as white or dark team based on jersey color.
 
-    def __init__(self, brightness_threshold=115):
-        self.brightness_threshold = brightness_threshold
+    Uses HSV saturation as primary signal — white jerseys have low saturation
+    regardless of lighting, while dark/colored jerseys have high saturation.
+    """
+
+    def __init__(self, saturation_threshold=75):
+        self.saturation_threshold = saturation_threshold
 
     def classify_player(self, frame, bbox):
         """Classify a single player as 'white' or 'dark'.
 
         Samples the upper torso region where the jersey is visible.
-        Returns ('white' | 'dark', mean_brightness).
+        Returns ('white' | 'dark', mean_saturation).
         """
         x1, y1, x2, y2 = [int(v) for v in bbox]
         h = y2 - y1
@@ -33,12 +37,11 @@ class TeamClassifier:
         if crop.size == 0:
             return "unknown", 0
 
-        # Convert to grayscale and get mean brightness
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        mean_brightness = float(np.mean(gray))
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mean_saturation = float(np.mean(hsv[:, :, 1]))
 
-        team = "white" if mean_brightness > self.brightness_threshold else "dark"
-        return team, mean_brightness
+        team = "white" if mean_saturation < self.saturation_threshold else "dark"
+        return team, mean_saturation
 
     def classify_all(self, frame, tracked_players):
         """Classify all tracked players in a frame.
