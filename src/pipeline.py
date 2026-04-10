@@ -129,6 +129,16 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
         while True:
             ret, frame = cap.read()
             if not ret:
+                # Try to recover from corrupt segments by seeking ahead
+                recovery_target = frame_num + int(fps * 5)
+                if recovery_target < total_frames:
+                    print(f"    [recovery] Read failed at frame {frame_num} "
+                          f"({frame_num/fps/60:.1f} min), seeking +5s...", flush=True)
+                    cap.release()
+                    cap = cv2.VideoCapture(path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, recovery_target)
+                    frame_num = recovery_target
+                    continue
                 break
 
             if frame_num % sample_rate != 0:
