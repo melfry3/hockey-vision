@@ -102,7 +102,7 @@ def analyze_game(video_paths, jersey_number, output_dir="output", config=None,
     all_my_positions = []  # unified position list across track ID changes
     frames_since_seen = 0
     max_reacquire_dist = 200  # max pixels to match when reacquiring
-    lost_threshold = int(30 * 30 / sample_rate)  # ~30 sec before giving up reacquire
+    lost_threshold = float("inf")  # never give up — player returns from bench
 
     for i, path in enumerate(video_paths):
         skip = skip_warmup_seconds if i == 0 else 0
