@@ -6,7 +6,7 @@ from ultralytics import YOLO
 class PlayerTracker:
     """Tracks detected players across frames using ByteTrack."""
 
-    def __init__(self, model_path="yolo11l.pt", confidence=0.2, imgsz=1280):
+    def __init__(self, model_path="yolo11l.pt", confidence=0.1, imgsz=1280):
         self.model = YOLO(model_path)
         self.confidence = confidence
         self.imgsz = imgsz
